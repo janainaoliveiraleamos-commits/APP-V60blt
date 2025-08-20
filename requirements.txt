@@ -89,11 +89,43 @@ colorlog>=6.7.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 
+# Advanced Analytics and Prediction
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+statsmodels>=0.14.0
+
+# Natural Language Processing
+spacy>=3.6.0
+textblob>=0.17.1
+nltk>=3.8.1
+
+# Time Series Analysis
+prophet>=1.1.4
+
+# Image Processing & OCR
+Pillow>=10.0.0
+pytesseract>=0.3.10
+opencv-python>=4.8.0
+
+# Advanced Visualization
+plotly>=5.15.0
+bokeh>=3.2.0
+
 # Word Clouds
 wordcloud>=1.9.0
 
 # Network Analysis
 networkx>=3.1
+
+# Sentiment Analysis
+vaderSentiment>=3.3.2
+
+# Topic Modeling
+gensim>=4.3.0
+
+# Statistical Analysis
+scipy>=1.11.0
 
 # Instagram API (versão mais compatível)
 instagram-private-api>=1.6.0
