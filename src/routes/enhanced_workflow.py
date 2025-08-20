@@ -1,7 +1,3 @@
-
-**2. `src/routes/enhanced_workflow.py` (Corrigido e Completo)**
-
-```python
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -16,9 +12,8 @@ import asyncio
 import os
 import glob
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any  # Import necessário para Dict e Any
 from flask import Blueprint, request, jsonify, send_file
-# Importa os serviços diretamente
 from services.real_search_orchestrator import real_search_orchestrator
 from services.viral_content_analyzer import viral_content_analyzer
 from services.enhanced_synthesis_engine import enhanced_synthesis_engine
@@ -52,8 +47,7 @@ def start_step1_collection():
         query_parts = [segmento]
         if produto:
             query_parts.append(produto)
-        # Removido "Brasil 2025" fixo para generalizar, pode ser adicionado no frontend se necessário
-        # query_parts.extend(["Brasil", "2025"])
+        query_parts.extend(["Brasil", "2024", "mercado"])
 
         query = " ".join(query_parts)
 
@@ -96,8 +90,8 @@ def start_step1_collection():
 
                     # Analisa e captura conteúdo viral
                     viral_analysis = loop.run_until_complete(
-                        viral_content_analyzer.analyze_viral_content(
-                            search_query=query,
+                        viral_content_analyzer.analyze_and_capture_viral_content(
+                            search_results=search_results,
                             session_id=session_id,
                             max_captures=15
                         )
@@ -364,8 +358,8 @@ def execute_complete_workflow():
 
                     # Analisa conteúdo viral
                     viral_analysis = loop.run_until_complete(
-                        viral_content_analyzer.analyze_viral_content(
-                            search_query=query,
+                        viral_content_analyzer.analyze_and_capture_viral_content(
+                            search_results=search_results,
                             session_id=session_id
                         )
                     )
@@ -593,7 +587,7 @@ def download_workflow_file(session_id, file_type):
 # --- Funções auxiliares ---
 def _generate_collection_report(
     search_results: Dict[str, Any], 
-    viral_analysis: Dict[str, Any],
+    viral_analysis: Dict[str, Any], 
     session_id: str, 
     context: Dict[str, Any]
 ) -> str:
@@ -603,7 +597,7 @@ def _generate_collection_report(
     def safe_format_int(value):
         try:
             # Tenta converter para int e formatar com separador de milhar
-            return f"{int(value):,}".replace(",", ".") # Formato brasileiro
+            return f"{int(value):,}"
         except (ValueError, TypeError):
             # Se falhar, retorna 'N/A' ou o valor original como string
             return str(value) if value is not None else 'N/A'
@@ -704,7 +698,7 @@ def _generate_collection_report(
             # Verifica se o caminho da imagem existe antes de adicioná-lo
             img_path = screenshot.get('relative_path', '')
             # Ajuste o caminho base conforme a estrutura do seu projeto
-            full_img_path = os.path.join("analyses_data", session_id, os.path.basename(img_path)) 
+            full_img_path = os.path.join("analyses_data", "files", session_id, os.path.basename(img_path)) 
             if img_path and os.path.exists(full_img_path):
                  report += f"![Screenshot {i}]({img_path})  \n\n"
             elif img_path: # Se o caminho existir, mas o arquivo não, mostra o caminho
