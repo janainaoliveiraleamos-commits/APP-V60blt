@@ -26,7 +26,6 @@ try:
     from webdriver_manager.chrome import ChromeDriverManager
     HAS_SELENIUM = True
 except ImportError:
-    #logger.warning("⚠️ Selenium não instalado - screenshots não disponíveis")
     HAS_SELENIUM = False
 
 logger = logging.getLogger(__name__)
@@ -37,8 +36,8 @@ try:
 except ImportError:
     logger.warning("⚠️ selenium_checker não encontrado. Screenshots podem falhar.")
     class SeleniumChecker:
-        def is_selenium_ready(self):
-            return False # Assume False se o módulo não for encontrado
+        def full_check(self):
+            return {"selenium_ready": False, "best_chrome_path": None}
 
 class ViralContentAnalyzer:
     """Analisador de conteúdo viral com captura automática"""
@@ -53,6 +52,11 @@ class ViralContentAnalyzer:
                 'engagement_rate': 0.05
             },
             'instagram': {
+                'min_likes': 1000,
+                'min_comments': 50,
+                'engagement_rate': 0.03
+            },
+            'facebook': {
                 'min_likes': 1000,
                 'min_comments': 50,
                 'engagement_rate': 0.03
@@ -300,6 +304,7 @@ class ViralContentAnalyzer:
             return []
 
         screenshots = []
+        driver = None
 
         try:
             # Configura Chrome headless para Replit
@@ -313,16 +318,12 @@ class ViralContentAnalyzer:
             chrome_options.add_argument("--remote-debugging-port=9222")
             chrome_options.add_argument("--disable-extensions")
             chrome_options.add_argument("--disable-plugins")
-            # chrome_options.add_argument("--disable-images") # Comentado para permitir carregamento de imagens
             chrome_options.add_argument(f"--window-size={self.screenshot_config['width']},{self.screenshot_config['height']}")
             chrome_options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
 
             # Usa Chrome do sistema Nix diretamente
             try:
-                # Importa o selenium_checker para usar sua lógica aprimorada
-                from .selenium_checker import SeleniumChecker # Importa novamente para escopo local
-
-                # Executa verificação completa
+                from .selenium_checker import SeleniumChecker
                 checker = SeleniumChecker()
                 check_results = checker.full_check()
 
@@ -330,7 +331,6 @@ class ViralContentAnalyzer:
                     logger.warning("⚠️ Selenium não está pronto - screenshots desabilitados")
                     return []
 
-                # Usa o melhor caminho encontrado
                 best_chrome_path = check_results.get('best_chrome_path')
                 if best_chrome_path:
                     chrome_options.binary_location = best_chrome_path
@@ -339,14 +339,12 @@ class ViralContentAnalyzer:
                     logger.warning("⚠️ Chrome não encontrado - screenshots desabilitados")
                     return []
 
-                # Tenta usar ChromeDriverManager primeiro
                 try:
                     service = Service(ChromeDriverManager().install())
                     driver = webdriver.Chrome(service=service, options=chrome_options)
                     logger.info("✅ ChromeDriverManager funcionou")
                 except Exception as e:
                     logger.warning(f"⚠️ ChromeDriverManager falhou: {e}, tentando usar chromedriver do sistema")
-                    # Fallback para chromedriver do sistema (se configurado corretamente)
                     try:
                         driver = webdriver.Chrome(options=chrome_options)
                         logger.info("✅ Chromedriver do sistema funcionou")
@@ -358,157 +356,169 @@ class ViralContentAnalyzer:
                 logger.error(f"❌ Falha total na configuração do Chrome: {e}")
                 return []
 
-            # Cria diretório para screenshots
             screenshots_dir = Path(f"analyses_data/files/{session_id}")
             screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-            try:
-                for i, content in enumerate(viral_content, 1):
-                    try:
-                        url = content.get('url', '')
-                        if not url or not url.startswith(('http://', 'https://')):
-                            logger.warning(f"Skipping invalid URL: {url}")
-                            continue
+            for i, content in enumerate(viral_content, 1):
+                try:
+                    url = content.get('url', '')
+                    platform = content.get('platform', 'web')
 
-                        logger.info(f"📸 Capturando screenshot {i}/{len(viral_content)}: {content.get('title', 'Sem título')}")
+                    if not url or not url.startswith(('http://', 'https://')):
+                        logger.warning(f"Skipping invalid URL: {url}")
+                        continue
 
-                        # Acessa a URL
-                        driver.get(url)
+                    logger.info(f"📸 Capturando screenshot {i}/{len(viral_content)}: {content.get('title', 'Sem título')}")
 
-                        # Aguarda carregamento
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.TAG_NAME, "body"))
-                        )
+                    driver.get(url)
 
-                        # Aguarda renderização completa
-                        await asyncio.sleep(self.screenshot_config['wait_time'])
+                    # Adiciona lógica específica para Instagram/Facebook
+                    if platform == 'instagram':
+                        # Tenta fechar pop-up de login se existir
+                        try:
+                            WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.XPATH, "//button[text()='Agora não']"))
+                            ).click()
+                            logger.info("Fechou pop-up de login do Instagram")
+                        except TimeoutException:
+                            pass # Pop-up não apareceu ou já foi fechado
+                        except Exception as e:
+                            logger.warning(f"Erro ao tentar fechar pop-up do Instagram: {e}")
 
-                        # Scroll para carregar conteúdo lazy-loaded
-                        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-                        await asyncio.sleep(self.screenshot_config['scroll_pause'])
-                        driver.execute_script("window.scrollTo(0, 0);")
-                        await asyncio.sleep(1)
+                        # Espera por elementos de post (ex: imagem principal ou vídeo)
+                        try:
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.XPATH, "//img[contains(@srcset, 's150x150')] | //video"))
+                            )
+                        except TimeoutException:
+                            logger.warning(f"Não encontrou elementos de post no Instagram para {url}")
 
-                        # Captura informações da página
-                        page_title = driver.title or content.get('title', 'Sem título')
-                        current_url = driver.current_url
+                    elif platform == 'facebook':
+                        # Tenta fechar pop-up de cookies/login
+                        try:
+                            WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.XPATH, "//div[@aria-label='Aceitar todos os cookies'] | //a[@data-testid='login_button']"))
+                            ).click()
+                            logger.info("Fechou pop-up de cookies/login do Facebook")
+                        except TimeoutException:
+                            pass
+                        except Exception as e:
+                            logger.warning(f"Erro ao tentar fechar pop-up do Facebook: {e}")
 
-                        # Define nome do arquivo
-                        platform = content.get('platform', 'web')
-                        viral_score = content.get('viral_score', 0)
-                        # Evita caracteres inválidos no nome do arquivo
-                        safe_title = "".join(c if c.isalnum() else "_" for c in page_title[:50])
-                        filename = f"viral_{platform}_{i:02d}_score{viral_score:.1f}_{safe_title}.png"
-                        screenshot_path = screenshots_dir / filename
+                        # Espera por elementos de post (ex: post feed)
+                        try:
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.XPATH, "//div[@role='feed'] | //div[@data-pagelet='ProfileCometPostCollection']"))
+                            )
+                        except TimeoutException:
+                            logger.warning(f"Não encontrou elementos de post no Facebook para {url}")
 
-                        # Captura screenshot
-                        driver.save_screenshot(str(screenshot_path))
+                    # Aguarda carregamento geral
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
 
-                        # Verifica se foi criado com sucesso
-                        if screenshot_path.exists() and screenshot_path.stat().st_size > 0:
-                            screenshot_data = {
-                                'filename': filename,
-                                'filepath': str(screenshot_path),
-                                'relative_path': f"files/{session_id}/{filename}",
-                                'url': url,
-                                'final_url': current_url,
-                                'title': page_title,
-                                'platform': platform,
-                                'viral_score': viral_score,
-                                'viral_category': content.get('viral_category', 'POPULAR'),
-                                'content_metrics': {
-                                    'views': content.get('view_count', content.get('views', 0)),
-                                    'likes': content.get('like_count', content.get('likes', 0)),
-                                    'comments': content.get('comment_count', content.get('comments', 0)),
-                                    'shares': content.get('shares', 0),
-                                    'engagement_rate': content.get('engagement_rate', 0)
-                                },
-                                'file_size': screenshot_path.stat().st_size,
-                                'captured_at': datetime.now().isoformat(),
-                                'capture_success': True
+                    await asyncio.sleep(self.screenshot_config['wait_time'])
+
+                    # Scroll para carregar conteúdo lazy-loaded
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+                    await asyncio.sleep(self.screenshot_config['scroll_pause'])
+                    driver.execute_script("window.scrollTo(0, 0);")
+                    await asyncio.sleep(1)
+
+                    page_title = driver.title or content.get('title', 'Sem título')
+                    current_url = driver.current_url
+
+                    filename = f"screenshot_{platform}_{i:03d}"
+                    screenshot_path = screenshots_dir / f"{filename}.png"
+
+                    driver.save_screenshot(str(screenshot_path))
+
+                    if screenshot_path.exists() and screenshot_path.stat().st_size > 0:
+                        logger.info(f"✅ Screenshot salvo: {screenshot_path}")
+                        screenshots.append({
+                            'success': True,
+                            'url': url,
+                            'final_url': current_url,
+                            'title': page_title,
+                            'platform': platform,
+                            'viral_score': content.get('viral_score', 0),
+                            'filename': f"{filename}.png",
+                            'filepath': str(screenshot_path),
+                            'relative_path': str(screenshot_path.relative_to(Path('analyses_data'))),
+                            'filesize': screenshot_path.stat().st_size,
+                            'timestamp': datetime.now().isoformat(),
+                            'content_metrics': {
+                                'likes': content.get('likes', 0),
+                                'comments': content.get('comments', 0),
+                                'shares': content.get('shares', 0),
+                                'views': content.get('view_count', 0) # Para YouTube/TikTok
                             }
+                        })
+                    else:
+                        raise Exception("Screenshot não foi criado ou está vazio")
 
-                            screenshots.append(screenshot_data)
-                            logger.info(f"✅ Screenshot {i} capturado: {filename}")
-                        else:
-                            logger.warning(f"⚠️ Falha ao criar arquivo de screenshot {i}: {screenshot_path}")
-
-                    except (TimeoutException, WebDriverException) as e:
-                        logger.error(f"❌ Erro de Selenium ao capturar screenshot {i} ({url}): {e}")
-                        continue # Tenta o próximo conteúdo
-                    except Exception as e:
-                        logger.error(f"❌ Erro inesperado ao capturar screenshot {i} ({url}): {e}")
-                        continue # Tenta o próximo conteúdo
-
-            finally:
-                if 'driver' in locals() and driver:
-                    driver.quit()
-                    logger.info("✅ Driver do Chrome fechado")
+                except Exception as e:
+                    logger.error(f"❌ Erro ao capturar screenshot de {url}: {e}")
+                    screenshots.append({
+                        'success': False,
+                        'url': url,
+                        'error': str(e),
+                        'timestamp': datetime.now().isoformat()
+                    })
 
         except Exception as e:
-            logger.warning(f"⚠️ Falha geral na captura de screenshots: {e}")
-            return [] # Retorna lista vazia em caso de erro grave
-
-        logger.info(f"📸 {len(screenshots)} screenshots capturados com sucesso")
+            logger.error(f"❌ Erro crítico na captura de screenshots: {e}")
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                    logger.info("✅ Chrome driver fechado")
+                except Exception as e:
+                    logger.error(f"❌ Erro ao fechar driver: {e}")
         return screenshots
 
     def _calculate_viral_metrics(self, viral_content: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Calcula métricas gerais de viralidade"""
-
-        if not viral_content:
-            return {}
-
-        metrics = {
-            'total_viral_content': len(viral_content),
-            'avg_viral_score': 0,
-            'viral_distribution': {
-                'MEGA_VIRAL': 0,
-                'VIRAL': 0,
-                'TRENDING': 0,
-                'POPULAR': 0
-            },
-            'platform_distribution': {},
-            'engagement_totals': {
-                'total_views': 0,
-                'total_likes': 0,
-                'total_comments': 0,
-                'total_shares': 0
-            },
-            'top_viral_score': 0,
-            'viral_content_percentage': 0 # Este campo não está sendo calculado, mas mantido por consistência
+        total_score = 0
+        total_viral_content = len(viral_content)
+        top_viral_score = 0
+        viral_distribution = {}
+        platform_distribution = {}
+        engagement_totals = {
+            'total_views': 0,
+            'total_likes': 0,
+            'total_comments': 0,
+            'total_shares': 0
         }
 
-        total_score = 0
-
         for content in viral_content:
-            viral_score = content.get('viral_score', 0)
-            total_score += viral_score
+            score = content.get('viral_score', 0)
+            total_score += score
+            if score > top_viral_score:
+                top_viral_score = score
 
-            # Atualiza score máximo
-            if viral_score > metrics['top_viral_score']:
-                metrics['top_viral_score'] = viral_score
+            category = content.get('viral_category', 'UNKNOWN')
+            viral_distribution[category] = viral_distribution.get(category, 0) + 1
 
-            # Distribui por categoria
-            category = content.get('viral_category', 'POPULAR')
-            metrics['viral_distribution'][category] = metrics['viral_distribution'].get(category, 0) + 1
+            platform = content.get('platform', 'UNKNOWN')
+            platform_distribution[platform] = platform_distribution.get(platform, 0) + 1
 
-            # Distribui por plataforma
-            platform = content.get('platform', 'web')
-            metrics['platform_distribution'][platform] = metrics['platform_distribution'].get(platform, 0) + 1
+            engagement_totals['total_views'] += int(content.get('view_count', 0))
+            engagement_totals['total_likes'] += int(content.get('like_count', content.get('likes', 0)))
+            engagement_totals['total_comments'] += int(content.get('comment_count', content.get('comments', 0)))
+            engagement_totals['total_shares'] += int(content.get('shares', 0))
 
-            # Soma engajamento
-            metrics['engagement_totals']['total_views'] += int(content.get('view_count', content.get('views', 0)))
-            metrics['engagement_totals']['total_likes'] += int(content.get('like_count', content.get('likes', 0)))
-            metrics['engagement_totals']['total_comments'] += int(content.get('comment_count', content.get('comments', 0)))
-            metrics['engagement_totals']['total_shares'] += int(content.get('shares', 0))
+        avg_viral_score = total_score / total_viral_content if total_viral_content > 0 else 0
 
-        # Calcula médias
-        if len(viral_content) > 0:
-            metrics['avg_viral_score'] = total_score / len(viral_content)
-        else:
-            metrics['avg_viral_score'] = 0
-
-        return metrics
+        return {
+            'total_viral_content': total_viral_content,
+            'avg_viral_score': avg_viral_score,
+            'top_viral_score': top_viral_score,
+            'viral_distribution': viral_distribution,
+            'platform_distribution': platform_distribution,
+            'engagement_totals': engagement_totals
+        }
 
     def _extract_engagement_insights(self, viral_content: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Extrai insights de engajamento"""
@@ -521,7 +531,6 @@ class ViralContentAnalyzer:
             'audience_preferences': {}
         }
 
-        # Analisa performance por plataforma
         platform_performance = {}
 
         for content in viral_content:
@@ -538,7 +547,6 @@ class ViralContentAnalyzer:
             platform_performance[platform]['total_score'] += viral_score
             platform_performance[platform]['content_count'] += 1
 
-        # Calcula médias e ordena
         for platform, data in platform_performance.items():
             if data['content_count'] > 0:
                 data['avg_score'] = data['total_score'] / data['content_count']
@@ -551,12 +559,10 @@ class ViralContentAnalyzer:
             reverse=True
         )
 
-        # Identifica padrões de conteúdo
         content_types = {}
         for content in viral_content:
             title = content.get('title', '').lower()
 
-            # Categoriza por tipo de conteúdo
             if any(word in title for word in ['como', 'tutorial', 'passo a passo']):
                 content_types['tutorial'] = content_types.get('tutorial', 0) + 1
             elif any(word in title for word in ['dica', 'segredo', 'truque']):
@@ -587,7 +593,6 @@ class ViralContentAnalyzer:
 
         report = f"# RELATÓRIO DE CONTEÚDO VIRAL - ARQV30 Enhanced v3.0\n\n**Sessão:** {session_id}  \n**Análise realizada em:** {analysis_results.get('analysis_started', 'N/A')}  \n**Conteúdo viral identificado:** {len(viral_content)}  \n**Screenshots capturados:** {len(screenshots)}\n\n---\n\n## RESUMO EXECUTIVO\n\n### Métricas Gerais:\n- **Total de conteúdo viral:** {metrics.get('total_viral_content', 0)}\n- **Score viral médio:** {metrics.get('avg_viral_score', 0):.2f}/10\n- **Score viral máximo:** {metrics.get('top_viral_score', 0):.2f}/10\n\n### Distribuição por Categoria:\n"
 
-        # Adiciona distribuição viral
         viral_dist = metrics.get('viral_distribution', {})
         for category, count in viral_dist.items():
             report += f"- **{category}:** {count} conteúdos\n"
@@ -599,12 +604,10 @@ class ViralContentAnalyzer:
 
         report += "\n---\n\n## TOP 10 CONTEÚDOS VIRAIS\n\n"
 
-        # Lista top performers
         top_performers = analysis_results.get('top_performers', [])
         for i, content in enumerate(top_performers[:10], 1):
             report += f"### {i}. {content.get('title', 'Sem título')}\n\n**Plataforma:** {content.get('platform', 'N/A').title()}  \n**Score Viral:** {content.get('viral_score', 0):.2f}/10  \n**Categoria:** {content.get('viral_category', 'N/A')}  \n**URL:** {content.get('url', 'N/A')}  \n"
 
-            # Métricas específicas por plataforma
             if content.get('platform') == 'youtube':
                 report += f"**Views:** {content.get('view_count', 0):,}  \n**Likes:** {content.get('like_count', 0):,}  \n**Comentários:** {content.get('comment_count', 0):,}  \n**Canal:** {content.get('channel', 'N/A')}  \n"
 
@@ -616,14 +619,12 @@ class ViralContentAnalyzer:
 
             report += "\n"
 
-        # Adiciona screenshots se disponíveis
         if screenshots:
             report += "---\n\n## EVIDÊNCIAS VISUAIS CAPTURADAS\n\n"
 
             for i, screenshot in enumerate(screenshots, 1):
                 report += f"### Screenshot {i}: {screenshot.get('title', 'Sem título')}\n\n**Plataforma:** {screenshot.get('platform', 'N/A').title()}  \n**Score Viral:** {screenshot.get('viral_score', 0):.2f}/10  \n**URL Original:** {screenshot.get('url', 'N/A')}  \n![Screenshot {i}]({screenshot.get('relative_path', '')})  \n\n"
 
-                # Métricas do conteúdo
                 metrics = screenshot.get('content_metrics', {})
                 if metrics:
                     report += "**Métricas de Engajamento:**  \n"
@@ -638,7 +639,6 @@ class ViralContentAnalyzer:
 
                 report += "\n"
 
-        # Insights de engajamento
         engagement_insights = analysis_results.get('engagement_insights', {})
         if engagement_insights:
             report += "---\n\n## INSIGHTS DE ENGAJAMENTO\n\n"
@@ -661,3 +661,5 @@ class ViralContentAnalyzer:
 
 # Instância global
 viral_content_analyzer = ViralContentAnalyzer()
+
+

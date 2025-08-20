@@ -16,7 +16,8 @@ from pathlib import Path
 # Import do Enhanced AI Manager
 from services.enhanced_ai_manager import enhanced_ai_manager
 from services.auto_save_manager import salvar_etapa, salvar_erro
-from modules.cpl_creator import generate_cpl_module  # Import do novo módulo
+# CORREÇÃO 1: Importar a função com o nome correto
+from modules.cpl_creator import create_devastating_cpl_protocol # Import do novo módulo
 
 logger = logging.getLogger(__name__)
 
@@ -163,13 +164,14 @@ class EnhancedModuleProcessor:
 
                 # Verifica se é o módulo especializado CPL
                 if module_name == 'cpl_completo':
+                    # CORREÇÃO 2: Chamar a função com o nome correto e argumentos ajustados
                     # Gera o módulo CPL especializado
-                    cpl_content = await generate_cpl_module(
-                        session_id=session_id,
+                    cpl_content = await create_devastating_cpl_protocol(
                         sintese_master=base_data.get('sintese_master', {}),
                         avatar_data=base_data.get('avatar_data', {}),
                         contexto_estrategico=base_data.get('contexto_estrategico', {}),
-                        dados_web=base_data.get('dados_web', {})
+                        dados_web=base_data.get('dados_web', {}),
+                        session_id=session_id # session_id passado como keyword argument
                     )
                     
                     # Salva conteúdo do módulo CPL em formato JSON e Markdown
