@@ -196,9 +196,9 @@ class RealSearchOrchestrator:
             if 'YOUTUBE' in self.api_keys:
                 social_tasks.append(self._search_youtube(query))
 
-            # Supadata (Instagram, Facebook, TikTok, Twitter, etc.)
-            if 'SUPADATA' in self.api_keys:
-                social_tasks.append(self._search_supadata(query))
+            # Supadata (Instagram, Facebook, TikTok)
+            # if 'SUPADATA' in self.api_keys:
+            #     social_tasks.append(self._search_supadata(query))
 
             # Executa buscas sociais
             if social_tasks:
@@ -213,7 +213,6 @@ class RealSearchOrchestrator:
                         if result.get('platform') == 'youtube':
                             search_results['youtube_results'].extend(result.get('results', []))
                         else:
-                            # Resultados genéricos de redes sociais do Supadata
                             search_results['social_results'].extend(result.get('results', []))
 
             # FASE 4: Identificação de Conteúdo Viral
@@ -556,85 +555,136 @@ class RealSearchOrchestrator:
             return {}
 
     async def _search_supadata(self, query: str) -> Dict[str, Any]:
-        """Busca REAL usando Supadata MCP Client"""
+        """Busca REAL usando Supadata MCP"""
         try:
-            # Importa o cliente Supadata
-            from services.mcp_supadata_manager import supadata_client
-            
-            if not supadata_client or not supadata_client.is_available():
-                logger.warning("⚠️ Supadata Client não está disponível")
-                return {'success': False, 'error': 'Supadata Client não disponível'}
+            api_key = self.get_next_api_key('SUPADATA')
+            if not api_key:
+                return {'success': False, 'error': 'Supadata API key não disponível'}
 
-            # Executa a pesquisa em todas as plataformas suportadas
-            # O método search do SupadataClient já retorna os dados formatados
-            search_result = await supadata_client.search(
-                query=query,
-                platform="all" # Busca em todas as plataformas
-            )
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                }
 
-            if not search_result.get('success'):
-                logger.error(f"❌ Erro no Supadata Client: {search_result.get('error')}")
-                return {'success': False, 'error': search_result.get('error', 'Erro desconhecido no Supadata')}
+                payload = {
+                    'method': 'social_search',
+                    'params': {
+                        'query': query,
+                        'platforms': ['instagram', 'facebook', 'tiktok'],
+                        'limit': 50,
+                        'sort_by': 'engagement',
+                        'include_metrics': True
+                    }
+                }
 
-            # Processa os resultados do Supadata para o formato padrão do orquestrador
-            results = []
-            
-            # Processa posts individuais
-            posts = search_result.get('posts', [])
-            for post in posts:
-                results.append({
-                    'title': post.get('title', post.get('caption', ''))[:100],
-                    'url': post.get('url', ''),
-                    'content': post.get('content', post.get('caption', '')),
-                    'platform': post.get('platform', 'social'),
-                    'engagement_rate': post.get('engagement_rate', 0),
-                    'likes': post.get('likes', 0),
-                    'comments': post.get('comments', 0),
-                    'shares': post.get('shares', 0),
-                    'author': post.get('author', ''),
-                    'published_at': post.get('published_at', ''),
-                    'viral_score': self._calculate_social_viral_score(post),
-                    'relevance_score': 0.8,
-                    'source': 'supadata'
-                })
+                async with session.post(
+                    self.service_urls['SUPADATA'],
+                    json=payload,
+                    headers=headers,
+                    timeout=45
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        results = []
 
-            # Se não encontrou posts individuais, tenta processar resultados agregados
-            if not results:
-                platforms_data = search_result.get('platforms', {})
-                for platform_name, platform_data in platforms_data.items():
-                    platform_posts = platform_data.get('results', [])
-                    for post in platform_posts:
-                        results.append({
-                            'title': post.get('title', post.get('content', ''))[:100],
-                            'url': post.get('url', ''),
-                            'content': post.get('content', ''),
-                            'platform': platform_name,
-                            'engagement_rate': post.get('engagement_rate', 0),
-                            'likes': post.get('likes', 0),
-                            'comments': post.get('comments', 0),
-                            'shares': post.get('shares', 0),
-                            'author': post.get('author', 'Autor desconhecido'),
-                            'published_at': post.get('published_at', ''),
-                            'viral_score': self._calculate_generic_viral_score(post),
-                            'relevance_score': post.get('relevance_score', 0.7),
-                            'source': 'supadata'
-                        })
+                        posts = data.get('result', {}).get('posts', [])
+                        for post in posts:
+                            results.append({
+                                'title': post.get('caption', '')[:100],
+                                'url': post.get('url', ''),
+                                'content': post.get('caption', ''),
+                                'platform': post.get('platform', 'social'),
+                                'engagement_rate': post.get('engagement_rate', 0),
+                                'likes': post.get('likes', 0),
+                                'comments': post.get('comments', 0),
+                                'shares': post.get('shares', 0),
+                                'author': post.get('author', ''),
+                                'published_at': post.get('published_at', ''),
+                                'viral_score': self._calculate_social_viral_score(post),
+                                'relevance_score': 0.8
+                            })
 
-            logger.info(f"✅ Supadata Client retornou {len(results)} resultados de redes sociais")
-            
-            return {
-                'success': True,
-                'provider': 'SUPADATA',
-                'platform': 'social_media',
-                'results': results,
-                'raw_data': search_result # Mantém os dados brutos para depuração
-            }
+                        return {
+                            'success': True,
+                            'provider': 'SUPADATA',
+                            'results': results
+                        }
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ Supadata erro {response.status}: {error_text}")
+                        return {'success': False, 'error': f'HTTP {response.status}'}
 
-        except ImportError:
-            logger.warning("⚠️ Supadata Client não encontrado")
-            return {'success': False, 'error': 'Supadata Client não disponível'}
         except Exception as e:
             logger.error(f"❌ Erro Supadata: {e}")
+            return {'success': False, 'error': str(e)}
+
+    async def _search_twitter(self, query: str) -> Dict[str, Any]:
+        """Busca REAL no Twitter/X"""
+        try:
+            api_key = self.get_next_api_key('X')
+            if not api_key:
+                return {'success': False, 'error': 'X API key não disponível'}
+
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                }
+
+                params = {
+                    'query': f"{query} lang:pt",
+                    'max_results': 50,
+                    'tweet.fields': 'public_metrics,created_at,author_id',
+                    'user.fields': 'username,verified,public_metrics',
+                    'expansions': 'author_id'
+                }
+
+                async with session.get(
+                    'https://api.twitter.com/2/tweets/search/recent',
+                    params=params,
+                    headers=headers,
+                    timeout=30
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        results = []
+
+                        tweets = data.get('data', [])
+                        users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
+
+                        for tweet in tweets:
+                            author = users.get(tweet.get('author_id', ''), {})
+                            metrics = tweet.get('public_metrics', {})
+
+                            results.append({
+                                'title': tweet.get('text', '')[:100],
+                                'url': f"https://twitter.com/i/status/{tweet.get('id')}",
+                                'content': tweet.get('text', ''),
+                                'platform': 'twitter',
+                                'author': author.get('username', ''),
+                                'author_verified': author.get('verified', False),
+                                'retweets': metrics.get('retweet_count', 0),
+                                'likes': metrics.get('like_count', 0),
+                                'replies': metrics.get('reply_count', 0),
+                                'quotes': metrics.get('quote_count', 0),
+                                'published_at': tweet.get('created_at', ''),
+                                'viral_score': self._calculate_twitter_viral_score(metrics),
+                                'relevance_score': 0.75
+                            })
+
+                        return {
+                            'success': True,
+                            'provider': 'X',
+                            'results': results
+                        }
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ X/Twitter erro {response.status}: {error_text}")
+                        return {'success': False, 'error': f'HTTP {response.status}'}
+
+        except Exception as e:
+            logger.error(f"❌ Erro X/Twitter: {e}")
             return {'success': False, 'error': str(e)}
 
     async def _search_exa(self, query: str) -> Dict[str, Any]:
@@ -949,31 +999,20 @@ class RealSearchOrchestrator:
 
         except:
             return 0.0
-            
-    def _calculate_generic_viral_score(self, post: Dict[str, Any]) -> float:
-        """Calcula score viral genérico para qualquer post"""
+
+    def _calculate_twitter_viral_score(self, metrics: Dict[str, Any]) -> float:
+        """Calcula score viral para Twitter"""
         try:
-            # Tenta usar campos específicos primeiro
-            if 'likes' in post or 'comments' in post or 'shares' in post:
-                return self._calculate_social_viral_score(post)
-            
-            # Se não tiver métricas específicas, usa uma abordagem genérica
-            engagement_signals = 0
-            
-            # Conta palavras-chave que indicam engajamento
-            content = (post.get('content', '') + ' ' + post.get('title', '')).lower()
-            viral_keywords = ['incrível', 'sensacional', 'viral', 'trending', 'popular', 'assista', 'compartilhe']
-            engagement_signals += sum(1 for kw in viral_keywords if kw in content)
-            
-            # Considera o comprimento do conteúdo (conteúdos muito curtos ou muito longos podem ser menos virais)
-            content_length = len(content)
-            if 50 <= content_length <= 500:
-                engagement_signals += 2
-            elif 500 < content_length <= 1000:
-                engagement_signals += 1
-                
+            retweets = int(metrics.get('retweet_count', 0))
+            likes = int(metrics.get('like_count', 0))
+            replies = int(metrics.get('reply_count', 0))
+            quotes = int(metrics.get('quote_count', 0))
+
+            # Fórmula viral para Twitter
+            viral_score = (retweets * 10) + (likes * 2) + (replies * 5) + (quotes * 15)
+
             # Normaliza para 0-10
-            return min(10.0, engagement_signals / 2.0)
+            return min(10.0, viral_score / 5000)
 
         except:
             return 0.0

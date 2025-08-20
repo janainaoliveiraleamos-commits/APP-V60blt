@@ -49,8 +49,6 @@ class EnhancedAIManager:
         self.providers = {}
         self.current_provider = None
         self.search_orchestrator = None
-        # Estrutura para gerenciar índices de rotação de chaves para cada provedor
-        self.api_key_indices = {}
 
         self._initialize_providers()
         self._initialize_search_tools()
@@ -59,49 +57,26 @@ class EnhancedAIManager:
 
     def _initialize_providers(self):
         """Inicializa todos os provedores de IA"""
-        
-        # --- OPENROUTER (Qwen) com ROTAÇÃO DE CHAVES ---
+
+        # Qwen via OpenRouter (Prioridade 1 - mais confiável)
         if HAS_OPENROUTER:
-            # Carrega todas as chaves disponíveis para o OpenRouter
-            openrouter_keys = []
-            
-            # Chave principal
-            main_key = os.getenv("OPENROUTER_API_KEY")
-            if main_key:
-                openrouter_keys.append(main_key)
-            
-            # Chaves numeradas: OPENROUTER_API_KEY_1, OPENROUTER_API_KEY_2, etc.
-            counter = 1
-            while True:
-                numbered_key = os.getenv(f"OPENROUTER_API_KEY_{counter}")
-                if numbered_key:
-                    openrouter_keys.append(numbered_key)
-                    counter += 1
-                else:
-                    break
-            
-            if openrouter_keys:
-                # Armazena as chaves e inicializa o índice de rotação para este provedor
-                self.api_key_indices["openrouter"] = 0
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            if api_key:
                 try:
-                    # Cria um cliente base, mas as chaves serão trocadas dinamicamente
                     openrouter_client = openrouter_openai.OpenAI(
-                        api_key=openrouter_keys[0], # Usa a primeira chave temporariamente
+                        api_key=api_key,
                         base_url="https://openrouter.ai/api/v1"
                     )
                     self.providers["openrouter"] = {
                         "client": openrouter_client,
                         "model": "qwen/qwen2.5-vl-32b-instruct:free",
                         "available": True,
-                        "supports_tools": False,
-                        "priority": 1,
-                        "api_keys": openrouter_keys # Armazena a lista de chaves
+                        "supports_tools": False, # Ajuste se o modelo suportar tools
+                        "priority": 1
                     }
-                    logger.info(f"✅ Qwen via OpenRouter configurado com {len(openrouter_keys)} chaves")
+                    logger.info("✅ Qwen via OpenRouter configurado")
                 except Exception as e:
                     logger.error(f"❌ Erro ao configurar Qwen/OpenRouter: {e}")
-            else:
-                 logger.warning("⚠️ Nenhuma chave OPENROUTER_API_KEY encontrada para Qwen/OpenRouter")
 
         # Gemini (Prioridade 2)
         if HAS_GEMINI:
@@ -127,7 +102,7 @@ class EnhancedAIManager:
                 try:
                     self.providers["groq"] = {
                         "client": Groq(api_key=api_key),
-                        "model": "llama3-70b-8192", # Modelo atualizado e suportado
+                        "model": "llama3-70b-8192", # Modelo atualizado - veja a tabela de depreciações
                         "available": True,
                         "supports_tools": False,
                         "priority": 3
@@ -152,34 +127,6 @@ class EnhancedAIManager:
                 except Exception as e:
                     logger.error(f"❌ Erro ao configurar OpenAI: {e}")
 
-    def _get_next_openrouter_key(self) -> str:
-        """Obtém a próxima chave da lista de chaves do OpenRouter, rotacionando-a."""
-        provider_name = "openrouter"
-        if provider_name not in self.providers or not self.providers[provider_name].get("api_keys"):
-            # Se não houver chaves configuradas, tenta usar uma variável de ambiente padrão
-            default_key = os.getenv("OPENROUTER_API_KEY")
-            if default_key:
-                logger.warning(f"⚠️ Usando chave padrão OPENROUTER_API_KEY para {provider_name}")
-                return default_key
-            else:
-                raise ValueError(f"Nenhuma chave de API disponível para {provider_name}")
-
-        keys = self.providers[provider_name]["api_keys"]
-        if not keys:
-             raise ValueError(f"Lista de chaves de API vazia para {provider_name}")
-
-        # Obtém o índice atual
-        current_index = self.api_key_indices.get(provider_name, 0)
-
-        # Obtém a chave atual
-        key = keys[current_index]
-
-        # Atualiza o índice para a próxima chamada (rotaciona)
-        self.api_key_indices[provider_name] = (current_index + 1) % len(keys)
-
-        logger.debug(f"🔄 {provider_name}: Usando chave {current_index + 1}/{len(keys)}")
-        return key
-
     def _initialize_search_tools(self):
         """Inicializa ferramentas de busca"""
         try:
@@ -197,12 +144,16 @@ class EnhancedAIManager:
             if not provider["available"]:
                 continue
 
+            # Se requer tools, pula provedores que não suportam
             if require_tools and not provider.get("supports_tools", False):
-                continue
+                 # Mas permite Qwen mesmo sem tools como fallback se necessário
+                 if name != "openrouter": # Qwen pode ser usado mesmo sem tools se for o único
+                    continue
 
             available.append((name, provider["priority"]))
 
         if available:
+            # Ordena pela prioridade (menor número = maior prioridade)
             available.sort(key=lambda x: x[1])
             return available[0][0]
 
@@ -226,10 +177,16 @@ class EnhancedAIManager:
         """
         logger.info("🔍 Iniciando geração com busca ativa")
 
-        provider_name = self._get_best_provider(require_tools=True)
-        if not provider_name:
-            logger.warning("⚠️ Nenhum provedor com ferramentas disponível - usando fallback")
-            return await self.generate_text(prompt + "\n\n" + context)
+        # Tenta Qwen/OpenRouter primeiro para geração com busca ativa
+        if "openrouter" in self.providers and self.providers["openrouter"]["available"]:
+             provider_name = "openrouter"
+             logger.info(f"🤖 Usando {provider_name} com busca ativa (prioritário)")
+        else:
+            # Caso contrário, usa a lógica padrão
+            provider_name = self._get_best_provider(require_tools=True)
+            if not provider_name:
+                logger.warning("⚠️ Nenhum provedor com ferramentas disponível - usando fallback")
+                return await self.generate_text(prompt + "\n\n" + context)
 
         provider = self.providers[provider_name]
         logger.info(f"🤖 Usando {provider_name} com busca ativa")
@@ -257,6 +214,7 @@ IMPORTANTE: Gere uma análise completa mesmo sem ferramentas de busca, baseando-
             elif provider_name == "openai":
                 return await self._generate_openai_with_tools(enhanced_prompt, max_search_iterations, session_id)
             else:
+                # Para Qwen/OpenRouter e outros, usa geração simples
                 return await self.generate_text(enhanced_prompt)
         except Exception as e:
             logger.error(f"❌ Erro com {provider_name}: {e}")
@@ -521,8 +479,7 @@ Fontes encontradas: {total_sources}
                 formatted += f"{i}. {result.get('title', 'Sem título')}\n"
                 formatted += f"   Canal: {result.get('channel', '')}\n"
                 formatted += f"   Views: {result.get('view_count', 0):,}\n"
-                formatted += f"   Likes: {result.get('like_count', 0):,}\n"
-                formatted += f"   Comentários: {result.get('comment_count', 0):,}\n\n"
+                formatted += f"   Likes: {result.get('like_count', 0):,}\n\n"
 
         # Social results
         social_results = search_results.get("social_results", [])
@@ -530,7 +487,7 @@ Fontes encontradas: {total_sources}
             formatted += "=== RESULTADOS REDES SOCIAIS ===\n"
             for i, result in enumerate(social_results[:5], 1):
                 formatted += f"{i}. {result.get('title', 'Sem título')}\n"
-                formatted += f"   Plataforma: {result.get('platform', 'Social')}\n"
+                formatted += f"   Plataforma: {result.get('platform', '')}\n"
                 formatted += f"   Engajamento: {result.get('viral_score', 0):.1f}/10\n\n"
 
         # Conteúdo viral
@@ -540,7 +497,7 @@ Fontes encontradas: {total_sources}
             for i, content in enumerate(viral_content[:5], 1):
                 formatted += f"{i}. {content.get('title', 'Sem título')}\n"
                 formatted += f"   URL: {content.get('url', '')}\n"
-                formatted += f"   Plataforma: {content.get('platform', 'Social')}\n"
+                formatted += f"   Plataforma: {content.get('platform', '')}\n"
                 formatted += f"   Viral Score: {content.get('viral_score', 0):.1f}/10\n\n"
 
         # Screenshots
@@ -553,9 +510,9 @@ Fontes encontradas: {total_sources}
 
         return formatted
 
-    # Método principal para geração de texto, com rotação de chaves para OpenRouter
+    # Método dummy para 'generate_text' caso seja chamado sem provedor com tools
     async def generate_text(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.7) -> str:
-        """Gera texto usando o melhor provedor disponível, com rotação de chaves para OpenRouter"""
+        """Gera texto usando o melhor provedor disponível"""
         provider_name = self._get_best_provider(require_tools=False)
 
         if not provider_name:
@@ -565,53 +522,18 @@ Fontes encontradas: {total_sources}
         provider = self.providers[provider_name]
         logger.info(f"🤖 Usando {provider_name} para geração de texto")
 
-        # --- Lógica de Rotação de Chaves para OpenRouter ---
-        if provider_name == "openrouter":
-            max_attempts = len(provider.get("api_keys", [None])) # Tenta todas as chaves disponíveis
-            for attempt in range(max_attempts):
-                try:
-                    # Obtém a próxima chave disponível
-                    current_api_key = self._get_next_openrouter_key()
-                    
-                    # Atualiza a chave de API no cliente OpenRouter para esta requisição específica
-                    # Isso é crucial para a rotação funcionar corretamente
-                    provider["client"] = openrouter_openai.OpenAI(
-                        api_key=current_api_key,
-                        base_url="https://openrouter.ai/api/v1"
-                    )
-                    
-                    logger.debug(f"🔐 Usando chave OpenRouter (tentativa {attempt + 1}/{max_attempts})")
-
-                    response = provider["client"].chat.completions.create(
-                        model=provider["model"],
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=max_tokens,
-                        temperature=temperature
-                    )
-                    return response.choices[0].message.content
-
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    # Verifica se o erro é relacionado a quota/cota
-                    if "quota" in error_msg or "429" in error_msg or "rate limit" in error_msg or "exceeded" in error_msg:
-                        logger.warning(f"⚠️ Quota excedida ou limite de taxa para a chave OpenRouter {attempt + 1}: {e}")
-                        # Se for a última tentativa, propaga o erro
-                        if attempt == max_attempts - 1:
-                            logger.error(f"❌ Todas as chaves OpenRouter esgotaram a quota: {e}")
-                            raise # Re-levanta o erro após tentar todas as chaves
-                        else:
-                            continue # Tenta a próxima chave
-                    else:
-                        # Se for outro tipo de erro (não relacionado a quota), re-levanta imediatamente
-                        logger.error(f"❌ Erro inesperado com a chave OpenRouter {attempt + 1}: {e}")
-                        raise
-
-            # Se o loop terminar sem sucesso (o que não deveria acontecer com o 'raise' acima)
-            return "Erro: Todas as tentativas de usar chaves OpenRouter falharam."
-
-        # --- Lógica para outros provedores (sem alteração) ---
         try:
-            if provider_name == "gemini":
+            if provider_name == "openrouter":
+                client = provider["client"]
+                response = client.chat.completions.create(
+                    model=provider["model"],
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+                return response.choices[0].message.content
+
+            elif provider_name == "gemini":
                 model = genai.GenerativeModel("gemini-2.0-flash-exp")
                 response = model.generate_content(
                     prompt,
